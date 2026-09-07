@@ -40,6 +40,7 @@ MICROEMU = '/opt/avatar/microemulator.jar'
 DEVICE = '/opt/avatar/microemu-device-resizable.jar'
 JAD = os.path.join(DATA_DIR, 'avatar.jad')
 PASSWORD_FILE = os.path.join(DATA_DIR, 'password.sha256')
+VNC_PASSWORD_FILE = os.path.join(DATA_DIR, 'vnc.pass')
 SCREENSHOT = os.path.join(DATA_DIR, 'microemulator.png')
 SIZE_FILE = os.path.join(DATA_DIR, 'screen.size')
 WORKSPACE_FILE = os.path.join(DATA_DIR, 'workspace.active')
@@ -83,6 +84,10 @@ def ensure_files():
     if not os.path.exists(PASSWORD_FILE):
         with open(PASSWORD_FILE, 'w') as f:
             f.write(hash_password(DEFAULT_PASSWORD))
+    if not os.path.exists(VNC_PASSWORD_FILE):
+        # Buat password VNC default
+        subprocess.run(['x11vnc', '-storepasswd', DEFAULT_PASSWORD, VNC_PASSWORD_FILE], 
+                     capture_output=True, check=False)
     if not os.path.exists(JAD):
         with open(JAD, 'w') as f:
             f.write('MIDlet-Jar-URL: file:///opt/avatar/avatar.jar\nMIDlet-Jar-Size: %d\n' % os.path.getsize(JAR))
@@ -94,6 +99,33 @@ def check_password(value):
             stored = f.read().strip()
         return hmac.compare_digest(stored, hash_password(value))
     except OSError:
+        return False
+
+
+def update_vnc_password(new_password):
+    """Update password VNC"""
+    try:
+        # Update file password VNC
+        result = subprocess.run(['x11vnc', '-storepasswd', new_password, VNC_PASSWORD_FILE], 
+                              capture_output=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError('Gagal mengupdate password VNC')
+        
+        # Restart x11vnc dengan password baru
+        subprocess.run(['pkill', '-f', 'x11vnc'], capture_output=True, check=False)
+        time.sleep(1)
+        
+        # Jalankan x11vnc dengan password baru
+        subprocess.Popen([
+            'x11vnc', '-display', DISPLAY, '-rfbport', '5901', 
+            '-rfbauth', VNC_PASSWORD_FILE, '-forever', '-shared', 
+            '-xkb', '-noxrecord', '-noxfixes', '-noxdamage'
+        ], stdout=open(os.path.join(DATA_DIR, 'x11vnc.log'), 'ab'), 
+           stderr=subprocess.STDOUT)
+        
+        return True
+    except Exception as e:
+        print(f"Error updating VNC password: {e}", flush=True)
         return False
 
 
@@ -356,9 +388,9 @@ def page(message=''):
 <form method="post" action="/switch-workspace"><input type="hidden" name="workspace" value="2"><button type="submit" class="switch %s">Workspace 2</button></form>
 </div>
 <p class="small">Klik tombol atau tekan <b>F12</b> di VNC untuk memindahkan workspace.</p></section>
-<section class="card"><h2>Change password</h2><p class="muted">Hanya password login panel yang berubah. Emulator tetap berjalan.</p>
+<section class="card"><h2>Change password</h2><p class="muted">Ubah password login panel dan VNC sekaligus.</p>
 <form method="post" action="/change-password"><label>Password saat ini</label><input type="password" name="current" required><label>Password baru</label><input type="password" name="new" minlength="6" required><label>Ulangi password baru</label><input type="password" name="confirm" minlength="6" required><button>Simpan password</button></form>
-<p class="small">Password default awal: <b>123456</b>. Data login disimpan di volume /data.</p></section></div></main></body></html>''' % (state_class, state_text, notice, DISPLAY, 'aktif' if states[0] else 'nonaktif', 'aktif' if states[1] else 'nonaktif', int(time.time()), active_workspace, 'aktif' if states[0] else 'nonaktif', 'aktif' if states[1] else 'nonaktif', 'active' if active_workspace == 1 else '', 'active' if active_workspace == 2 else '')
+<p class="small">Password default awal: <b>123456</b>. Password akan diubah untuk panel web dan VNC.</p></section></div></main></body></html>''' % (state_class, state_text, notice, DISPLAY, 'aktif' if states[0] else 'nonaktif', 'aktif' if states[1] else 'nonaktif', int(time.time()), active_workspace, 'aktif' if states[0] else 'nonaktif', 'aktif' if states[1] else 'nonaktif', 'active' if active_workspace == 1 else '', 'active' if active_workspace == 2 else '')
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -454,9 +486,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 elif new != confirm:
                     message = 'Konfirmasi password tidak cocok'
                 else:
+                    # Update password web
                     with open(PASSWORD_FILE, 'w') as f:
                         f.write(hash_password(new))
-                    message = 'Password login berhasil diubah tanpa mematikan emulator'
+                    
+                    # Update password VNC
+                    if update_vnc_password(new):
+                        message = 'Password web dan VNC berhasil diubah'
+                    else:
+                        message = 'Password web berhasil diubah, tetapi password VNC gagal diupdate'
             else:
                 self.send_error(404)
                 return
@@ -507,7 +545,10 @@ else
     next=1
 fi
 
-# Panggil API untuk switch workspace
+# Baca password dari file
+password=$(cat /data/password.sha256 2>/dev/null || echo "123456")
+
+# Panggil API untuk switch workspace dengan password yang benar
 curl -s -u admin:123456 -X POST http://localhost:8080/switch-workspace \
     -d "workspace=$next" > /dev/null 2>&1
 TOGGLE_WORKSPACE_SCRIPT
