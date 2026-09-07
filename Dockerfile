@@ -40,6 +40,7 @@ MICROEMU = '/opt/avatar/microemulator.jar'
 DEVICE = '/opt/avatar/microemu-device-resizable.jar'
 JAD = os.path.join(DATA_DIR, 'avatar.jad')
 PASSWORD_FILE = os.path.join(DATA_DIR, 'password.sha256')
+PLAINTEXT_PASSWORD_FILE = os.path.join(DATA_DIR, 'password.txt')
 VNC_PASSWORD_FILE = os.path.join(DATA_DIR, 'vnc.pass')
 SCREENSHOT = os.path.join(DATA_DIR, 'microemulator.png')
 SIZE_FILE = os.path.join(DATA_DIR, 'screen.size')
@@ -84,6 +85,9 @@ def ensure_files():
     if not os.path.exists(PASSWORD_FILE):
         with open(PASSWORD_FILE, 'w') as f:
             f.write(hash_password(DEFAULT_PASSWORD))
+    if not os.path.exists(PLAINTEXT_PASSWORD_FILE):
+        with open(PLAINTEXT_PASSWORD_FILE, 'w') as f:
+            f.write(DEFAULT_PASSWORD)
     if not os.path.exists(VNC_PASSWORD_FILE):
         # Buat password VNC default
         subprocess.run(['x11vnc', '-storepasswd', DEFAULT_PASSWORD, VNC_PASSWORD_FILE], 
@@ -100,6 +104,15 @@ def check_password(value):
         return hmac.compare_digest(stored, hash_password(value))
     except OSError:
         return False
+
+
+def get_plaintext_password():
+    """Mendapatkan password plaintext untuk keperluan script"""
+    try:
+        with open(PLAINTEXT_PASSWORD_FILE) as f:
+            return f.read().strip()
+    except OSError:
+        return DEFAULT_PASSWORD
 
 
 def update_vnc_password(new_password):
@@ -489,6 +502,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     # Update password web
                     with open(PASSWORD_FILE, 'w') as f:
                         f.write(hash_password(new))
+                    # Simpan password plaintext untuk keperluan script
+                    with open(PLAINTEXT_PASSWORD_FILE, 'w') as f:
+                        f.write(new)
                     
                     # Update password VNC
                     if update_vnc_password(new):
@@ -545,11 +561,11 @@ else
     next=1
 fi
 
-# Baca password dari file
-password=$(cat /data/password.sha256 2>/dev/null || echo "123456")
+# Baca password dari file plaintext
+password=$(cat /data/password.txt 2>/dev/null || echo "123456")
 
 # Panggil API untuk switch workspace dengan password yang benar
-curl -s -u admin:123456 -X POST http://localhost:8080/switch-workspace \
+curl -s -u admin:$password -X POST http://localhost:8080/switch-workspace \
     -d "workspace=$next" > /dev/null 2>&1
 TOGGLE_WORKSPACE_SCRIPT
 chmod +x /opt/avatar/toggle-workspace.sh
