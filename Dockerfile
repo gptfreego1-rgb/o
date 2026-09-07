@@ -506,7 +506,7 @@ else
 fi
 
 # Panggil API untuk switch workspace
-curl -s -u admin:$(cat /data/password.sha256 | head -c 16) -X POST http://localhost:8080/switch-workspace \
+curl -s -u admin:123456 -X POST http://localhost:8080/switch-workspace \
     -d "workspace=$next" > /dev/null 2>&1
 SH
 chmod +x /opt/avatar/toggle-workspace.sh
