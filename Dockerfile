@@ -18,8 +18,8 @@ RUN apt-get update \
     && cp /tmp/microemulator-2.0.4/devices/microemu-device-resizable.jar /opt/avatar/microemu-device-resizable.jar \
     && rm -rf /tmp/microemulator.zip /tmp/microemulator-2.0.4
 
-RUN <<'SH'
-cat > /opt/avatar/app.py <<'PY'
+RUN <<'DOCKERFILE_SCRIPT'
+cat > /opt/avatar/app.py <<'PYTHON_SCRIPT'
 #!/usr/bin/env python3
 import base64
 import hashlib
@@ -484,18 +484,18 @@ def main():
 
 if __name__ == '__main__':
     main()
-PY
+PYTHON_SCRIPT
 chmod +x /opt/avatar/app.py
 python3 -m py_compile /opt/avatar/app.py
 
 # Buat konfigurasi xbindkeys untuk F12
-cat > /opt/avatar/.xbindkeysrc <<'XB'
+cat > /opt/avatar/.xbindkeysrc <<'XBINDKEYS_CONFIG'
 "/opt/avatar/toggle-workspace.sh"
     F12
-XB
+XBINDKEYS_CONFIG
 
 # Buat script untuk toggle workspace
-cat > /opt/avatar/toggle-workspace.sh <<'SH'
+cat > /opt/avatar/toggle-workspace.sh <<'TOGGLE_WORKSPACE_SCRIPT'
 #!/bin/bash
 # Baca workspace aktif saat ini
 current=$(cat /data/active.workspace 2>/dev/null || echo 1)
@@ -510,9 +510,9 @@ fi
 # Panggil API untuk switch workspace
 curl -s -u admin:123456 -X POST http://localhost:8080/switch-workspace \
     -d "workspace=$next" > /dev/null 2>&1
-SH
+TOGGLE_WORKSPACE_SCRIPT
 chmod +x /opt/avatar/toggle-workspace.sh
-SH
+DOCKERFILE_SCRIPT
 
 WORKDIR /opt/avatar
 EXPOSE 5901 8080
