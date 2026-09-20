@@ -5,7 +5,8 @@ FROM eclipse-temurin:17-jre-jammy
 ENV DEBIAN_FRONTEND=noninteractive \
     DISPLAY=:99 \
     PORT=8080 \
-    DATA_DIR=/data
+    DATA_DIR=/data \
+    DEFAULT_PASSWORD=123456
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 curl unzip imagemagick xvfb x11vnc x11-utils xdotool x11-apps xbindkeys \
@@ -69,29 +70,37 @@ def ensure_files():
     if not os.path.exists(ACTIVE_WORKSPACE_FILE):
         with open(ACTIVE_WORKSPACE_FILE, 'w') as f:
             f.write('1\n')
-    
+
     with open(SIZE_FILE) as f:
         width, height = [int(x) for x in f.read().split()[:2]]
-    
+
     for workspace_id in range(1, 3):
         workspace_dir = get_workspace_dir(workspace_id)
         config_dir = os.path.join(workspace_dir, '.microemulator')
         os.makedirs(config_dir, exist_ok=True)
         config_file = os.path.join(config_dir, 'config2.xml')
-        
+
         with open(config_file, 'w') as f:
             f.write('<config><devices><device default="true"><name>Avatar resizable</name><descriptor>org/microemu/device/resizable/device.xml</descriptor><rectangle><x>0</x><y>0</y><width>%d</width><height>%d</height></rectangle></device></devices></config>\n' % (width, height))
-    
+
+    # --- FIX: sinkronkan password.sha256 dengan password.txt ---
     if not os.path.exists(PASSWORD_FILE):
         with open(PASSWORD_FILE, 'w') as f:
             f.write(hash_password(DEFAULT_PASSWORD))
-    if not os.path.exists(PLAINTEXT_PASSWORD_FILE):
         with open(PLAINTEXT_PASSWORD_FILE, 'w') as f:
             f.write(DEFAULT_PASSWORD)
+    else:
+        # Kalau sha ada tapi plaintext hilang/kosong, tulis ulang plaintext dari default
+        if not os.path.exists(PLAINTEXT_PASSWORD_FILE) or os.path.getsize(PLAINTEXT_PASSWORD_FILE) == 0:
+            with open(PLAINTEXT_PASSWORD_FILE, 'w') as f:
+                f.write(DEFAULT_PASSWORD)
+
     if not os.path.exists(VNC_PASSWORD_FILE):
-        # Buat password VNC default
-        subprocess.run(['x11vnc', '-storepasswd', DEFAULT_PASSWORD, VNC_PASSWORD_FILE], 
-                     capture_output=True, check=False)
+        with open(PLAINTEXT_PASSWORD_FILE) as f:
+            vnc_pw = f.read().strip() or DEFAULT_PASSWORD
+        subprocess.run(['x11vnc', '-storepasswd', vnc_pw, VNC_PASSWORD_FILE],
+                       capture_output=True, check=False)
+
     if not os.path.exists(JAD):
         with open(JAD, 'w') as f:
             f.write('MIDlet-Jar-URL: file:///opt/avatar/avatar.jar\nMIDlet-Jar-Size: %d\n' % os.path.getsize(JAR))
@@ -107,7 +116,6 @@ def check_password(value):
 
 
 def get_plaintext_password():
-    """Mendapatkan password plaintext untuk keperluan script"""
     try:
         with open(PLAINTEXT_PASSWORD_FILE) as f:
             return f.read().strip()
@@ -116,26 +124,22 @@ def get_plaintext_password():
 
 
 def update_vnc_password(new_password):
-    """Update password VNC"""
     try:
-        # Update file password VNC
-        result = subprocess.run(['x11vnc', '-storepasswd', new_password, VNC_PASSWORD_FILE], 
-                              capture_output=True, check=False)
+        result = subprocess.run(['x11vnc', '-storepasswd', new_password, VNC_PASSWORD_FILE],
+                                capture_output=True, check=False)
         if result.returncode != 0:
             raise RuntimeError('Gagal mengupdate password VNC')
-        
-        # Restart x11vnc dengan password baru
+
         subprocess.run(['pkill', '-f', 'x11vnc'], capture_output=True, check=False)
         time.sleep(1)
-        
-        # Jalankan x11vnc dengan password baru
+
         subprocess.Popen([
-            'x11vnc', '-display', DISPLAY, '-rfbport', '5901', 
-            '-rfbauth', VNC_PASSWORD_FILE, '-forever', '-shared', 
+            'x11vnc', '-display', DISPLAY, '-rfbport', '5901',
+            '-rfbauth', VNC_PASSWORD_FILE, '-forever', '-shared',
             '-xkb', '-noxrecord', '-noxfixes', '-noxdamage'
-        ], stdout=open(os.path.join(DATA_DIR, 'x11vnc.log'), 'ab'), 
+        ], stdout=open(os.path.join(DATA_DIR, 'x11vnc.log'), 'ab'),
            stderr=subprocess.STDOUT)
-        
+
         return True
     except Exception as e:
         print(f"Error updating VNC password: {e}", flush=True)
@@ -170,8 +174,8 @@ def set_active_workspace(workspace_id):
 
 def get_window_id(workspace_id):
     try:
-        result = subprocess.run(['xdotool', 'search', '--name', 'MicroEmulator'], 
-                              capture_output=True, text=True, env={**os.environ, 'DISPLAY': DISPLAY})
+        result = subprocess.run(['xdotool', 'search', '--name', 'MicroEmulator'],
+                                capture_output=True, text=True, env={**os.environ, 'DISPLAY': DISPLAY})
         if result.returncode == 0:
             windows = result.stdout.strip().split('\n')
             valid_windows = [w for w in windows if w.strip()]
@@ -189,17 +193,17 @@ def start_emulator():
     ensure_files()
     with open(SIZE_FILE) as f:
         width, height = [int(x) for x in f.read().split()[:2]]
-    
+
     workspace_processes = []
     states = workspace_states()
-    
+
     for slot in (1, 2):
         if not states[slot - 1]:
             workspace_processes.append(None)
             continue
-        
+
         workspace_dir = get_workspace_dir(slot)
-        
+
         command = [
             'java', '-noverify', '-Xmx256m', '-Djava.awt.headless=false',
             '-Dawt.useSystemAAFontSettings=on', '-Dswing.aatext=true',
@@ -207,61 +211,61 @@ def start_emulator():
             '-cp', MICROEMU + ':' + DEVICE,
             'org.microemu.app.Main', JAD
         ]
-        
+
         log = open(os.path.join(DATA_DIR, 'workspace%d.log' % slot), 'ab', buffering=0)
         p = subprocess.Popen(command, cwd='/opt/avatar', env={**os.environ, 'DISPLAY': DISPLAY}, stdout=log, stderr=subprocess.STDOUT)
         workspace_processes.append(p)
-    
+
     process = workspace_processes[0] if workspace_processes and workspace_processes[0] else None
-    
+
     def setup_windows():
         time.sleep(3)
         try:
-            result = subprocess.run(['xdotool', 'search', '--name', 'MicroEmulator'], 
-                                  capture_output=True, text=True, env={**os.environ, 'DISPLAY': DISPLAY})
+            result = subprocess.run(['xdotool', 'search', '--name', 'MicroEmulator'],
+                                    capture_output=True, text=True, env={**os.environ, 'DISPLAY': DISPLAY})
             if result.returncode == 0:
                 windows = result.stdout.strip().split('\n')
                 valid_windows = [w for w in windows if w.strip()]
                 for i, window in enumerate(valid_windows):
-                    subprocess.run(['xdotool', 'windowsize', window, str(width), str(height + 40)], 
-                                 env={**os.environ, 'DISPLAY': DISPLAY})
-                
+                    subprocess.run(['xdotool', 'windowsize', window, str(width), str(height + 40)],
+                                   env={**os.environ, 'DISPLAY': DISPLAY})
+
                 show_active_workspace()
         except Exception as e:
             print(f"Error setting up windows: {e}", flush=True)
-    
+
     import threading
     setup_thread = threading.Thread(target=setup_windows)
     setup_thread.daemon = True
     setup_thread.start()
-    
+
     return 'Dua workspace berhasil dimulai'
 
 
 def show_active_workspace():
     active = get_active_workspace()
-    
+
     try:
-        result = subprocess.run(['xdotool', 'search', '--name', 'MicroEmulator'], 
-                              capture_output=True, text=True, env={**os.environ, 'DISPLAY': DISPLAY})
+        result = subprocess.run(['xdotool', 'search', '--name', 'MicroEmulator'],
+                                capture_output=True, text=True, env={**os.environ, 'DISPLAY': DISPLAY})
         if result.returncode == 0:
             windows = result.stdout.strip().split('\n')
             valid_windows = [w for w in windows if w.strip()]
-            
+
             for i, window in enumerate(valid_windows):
                 workspace_id = i + 1
                 if workspace_id == active:
-                    subprocess.run(['xdotool', 'windowmove', window, '0', '0'], 
-                                 env={**os.environ, 'DISPLAY': DISPLAY})
-                    subprocess.run(['xdotool', 'windowraise', window], 
-                                 env={**os.environ, 'DISPLAY': DISPLAY})
-                    subprocess.run(['xdotool', 'windowactivate', window], 
-                                 env={**os.environ, 'DISPLAY': DISPLAY})
-                    subprocess.run(['xdotool', 'windowfocus', window], 
-                                 env={**os.environ, 'DISPLAY': DISPLAY})
+                    subprocess.run(['xdotool', 'windowmove', window, '0', '0'],
+                                   env={**os.environ, 'DISPLAY': DISPLAY})
+                    subprocess.run(['xdotool', 'windowraise', window],
+                                   env={**os.environ, 'DISPLAY': DISPLAY})
+                    subprocess.run(['xdotool', 'windowactivate', window],
+                                   env={**os.environ, 'DISPLAY': DISPLAY})
+                    subprocess.run(['xdotool', 'windowfocus', window],
+                                   env={**os.environ, 'DISPLAY': DISPLAY})
                 else:
-                    subprocess.run(['xdotool', 'windowmove', window, '0', '500'], 
-                                 env={**os.environ, 'DISPLAY': DISPLAY})
+                    subprocess.run(['xdotool', 'windowmove', window, '0', '500'],
+                                   env={**os.environ, 'DISPLAY': DISPLAY})
     except Exception as e:
         print(f"Error showing active workspace: {e}", flush=True)
 
@@ -269,11 +273,11 @@ def show_active_workspace():
 def switch_workspace(workspace_id):
     if not emulator_running():
         return 'Emulator tidak berjalan'
-    
+
     states = workspace_states()
     if not states[workspace_id - 1]:
         return 'Workspace %d tidak aktif' % workspace_id
-    
+
     set_active_workspace(workspace_id)
     show_active_workspace()
     return 'Berpindah ke Workspace %d' % workspace_id
@@ -282,7 +286,7 @@ def switch_workspace(workspace_id):
 def toggle_workspace():
     current = get_active_workspace()
     next_workspace = 2 if current == 1 else 1
-    
+
     states = workspace_states()
     if states[next_workspace - 1]:
         return switch_workspace(next_workspace)
@@ -292,47 +296,47 @@ def toggle_workspace():
 
 def make_screenshot():
     ensure_files()
-    
+
     active = get_active_workspace()
     window_id = get_window_id(active)
-    
+
     if not window_id:
         raise RuntimeError('Window MicroEmulator tidak ditemukan')
-    
-    subprocess.run(['xdotool', 'windowactivate', window_id], 
-                 env={**os.environ, 'DISPLAY': DISPLAY}, capture_output=True)
-    subprocess.run(['xdotool', 'windowfocus', window_id], 
-                 env={**os.environ, 'DISPLAY': DISPLAY}, capture_output=True)
+
+    subprocess.run(['xdotool', 'windowactivate', window_id],
+                   env={**os.environ, 'DISPLAY': DISPLAY}, capture_output=True)
+    subprocess.run(['xdotool', 'windowfocus', window_id],
+                   env={**os.environ, 'DISPLAY': DISPLAY}, capture_output=True)
     time.sleep(0.5)
-    
+
     xwd_file = os.path.join(DATA_DIR, 'screenshot.xwd')
-    
+
     try:
-        result = subprocess.run(['xwd', '-display', DISPLAY, '-id', window_id, '-out', xwd_file], 
-                              capture_output=True, timeout=10)
-        
+        result = subprocess.run(['xwd', '-display', DISPLAY, '-id', window_id, '-out', xwd_file],
+                                capture_output=True, timeout=10)
+
         if result.returncode == 0:
-            convert_result = subprocess.run(['convert', xwd_file, '-type', 'TrueColor', '-depth', '8', 'PNG24:' + SCREENSHOT], 
-                                          capture_output=True)
+            convert_result = subprocess.run(['convert', xwd_file, '-type', 'TrueColor', '-depth', '8', 'PNG24:' + SCREENSHOT],
+                                            capture_output=True)
             if convert_result.returncode == 0:
                 if os.path.exists(xwd_file):
                     os.remove(xwd_file)
                 return
     except subprocess.TimeoutExpired:
         pass
-    
+
     try:
-        result = subprocess.run(['import', '-display', DISPLAY, '-window', window_id, 
-                               '-type', 'TrueColor', '-depth', '8', 'PNG24:' + SCREENSHOT], 
-                              capture_output=True, timeout=10)
+        result = subprocess.run(['import', '-display', DISPLAY, '-window', window_id,
+                                 '-type', 'TrueColor', '-depth', '8', 'PNG24:' + SCREENSHOT],
+                                capture_output=True, timeout=10)
         if result.returncode == 0:
             return
     except subprocess.TimeoutExpired:
         pass
-    
-    subprocess.run(['import', '-display', DISPLAY, '-window', 'root', 
-                   '-type', 'TrueColor', '-depth', '8', 'PNG24:' + SCREENSHOT], 
-                  capture_output=True)
+
+    subprocess.run(['import', '-display', DISPLAY, '-window', 'root',
+                    '-type', 'TrueColor', '-depth', '8', 'PNG24:' + SCREENSHOT],
+                   capture_output=True)
 
 
 def set_workspace(slot, enabled):
@@ -353,7 +357,7 @@ def resize_emulator(width, height):
     height = max(120, min(1200, int(height)))
     with open(SIZE_FILE, 'w') as f:
         f.write('%d %d\n' % (width, height))
-    
+
     for workspace_id in range(1, 3):
         workspace_dir = get_workspace_dir(workspace_id)
         config_dir = os.path.join(workspace_dir, '.microemulator')
@@ -361,7 +365,7 @@ def resize_emulator(width, height):
         config_file = os.path.join(config_dir, 'config2.xml')
         with open(config_file, 'w') as f:
             f.write('<config><devices><device default="true"><name>Avatar resizable</name><descriptor>org/microemu/device/resizable/device.xml</descriptor><rectangle><x>0</x><y>0</y><width>%d</width><height>%d</height></rectangle></device></devices></config>\n' % (width, height))
-    
+
     if emulator_running():
         for p in workspace_processes:
             if p is not None and p.poll() is None:
@@ -499,14 +503,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 elif new != confirm:
                     message = 'Konfirmasi password tidak cocok'
                 else:
-                    # Update password web
                     with open(PASSWORD_FILE, 'w') as f:
                         f.write(hash_password(new))
-                    # Simpan password plaintext untuk keperluan script
                     with open(PLAINTEXT_PASSWORD_FILE, 'w') as f:
                         f.write(new)
-                    
-                    # Update password VNC
+
                     if update_vnc_password(new):
                         message = 'Password web dan VNC berhasil diubah'
                     else:
@@ -542,31 +543,49 @@ PYTHON_SCRIPT
 chmod +x /opt/avatar/app.py
 python3 -m py_compile /opt/avatar/app.py
 
-# Buat konfigurasi xbindkeys untuk F12
+# Konfigurasi xbindkeys untuk F12
 cat > /opt/avatar/.xbindkeysrc <<'XBINDKEYS_CONFIG'
 "/opt/avatar/toggle-workspace.sh"
     F12
 XBINDKEYS_CONFIG
 
-# Buat script untuk toggle workspace
+# Script toggle workspace (FIXED: pakai curl config file + retry)
 cat > /opt/avatar/toggle-workspace.sh <<'TOGGLE_WORKSPACE_SCRIPT'
 #!/bin/bash
-# Baca workspace aktif saat ini
+# Retry sampai HTTP server siap
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -s -o /dev/null "http://localhost:8080/" 2>/dev/null; then
+        break
+    fi
+    sleep 0.5
+done
+
 current=$(cat /data/active.workspace 2>/dev/null || echo 1)
 
-# Toggle ke workspace lain
 if [ "$current" -eq 1 ]; then
     next=2
 else
     next=1
 fi
 
-# Baca password dari file plaintext
-password=$(cat /data/password.txt 2>/dev/null || echo "123456")
+# Baca password dengan aman
+password=""
+if [ -f /data/password.txt ]; then
+    IFS= read -r password < /data/password.txt
+fi
+password="${password:-123456}"
 
-# Panggil API untuk switch workspace dengan password yang benar
-curl -s -u admin:$password -X POST http://localhost:8080/switch-workspace \
+# Tulis curl config sementara agar karakter spesial di password tidak diinterpretasi shell
+cfg=$(mktemp)
+chmod 600 "$cfg"
+# Escape backslash dan double-quote untuk format config curl
+escaped=$(printf '%s' "$password" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+printf 'user = "admin:%s"\n' "$escaped" > "$cfg"
+
+curl -s -K "$cfg" -X POST "http://localhost:8080/switch-workspace" \
     -d "workspace=$next" > /dev/null 2>&1
+
+rm -f "$cfg"
 TOGGLE_WORKSPACE_SCRIPT
 chmod +x /opt/avatar/toggle-workspace.sh
 DOCKERFILE_SCRIPT
@@ -574,4 +593,16 @@ DOCKERFILE_SCRIPT
 WORKDIR /opt/avatar
 EXPOSE 5901 8080
 
-CMD ["sh", "-c", "mkdir -p /data; if [ ! -s /data/vnc.pass ]; then x11vnc -storepasswd \"${VNC_PASSWORD:-123456}\" /data/vnc.pass >/dev/null 2>&1 || true; fi; Xvfb :99 -screen 0 393x450x24 -ac +extension GLX >/data/xvfb.log 2>&1 & sleep 2; if xdpyinfo -display :99 >/dev/null 2>&1; then (while true; do x11vnc -display :99 -rfbport 5901 -rfbauth /data/vnc.pass -forever -shared -xkb -noxrecord -noxfixes -noxdamage >>/data/x11vnc.log 2>&1 || true; sleep 2; done) & else echo 'Xvfb failed; HTTP panel will still start' >>/data/xvfb.log; fi; sleep 1; xbindkeys -f /opt/avatar/.xbindkeysrc & exec python3 /opt/avatar/app.py"]
+CMD ["sh", "-c", "mkdir -p /data; \
+if [ ! -s /data/vnc.pass ]; then x11vnc -storepasswd \"${VNC_PASSWORD:-123456}\" /data/vnc.pass >/dev/null 2>&1 || true; fi; \
+if [ ! -s /data/password.txt ]; then echo \"${DEFAULT_PASSWORD:-123456}\" > /data/password.txt; fi; \
+Xvfb :99 -screen 0 393x450x24 -ac +extension GLX >/data/xvfb.log 2>&1 & \
+sleep 2; \
+if xdpyinfo -display :99 >/dev/null 2>&1; then \
+  (while true; do x11vnc -display :99 -rfbport 5901 -rfbauth /data/vnc.pass -forever -shared -xkb -noxrecord -noxfixes -noxdamage >>/data/x11vnc.log 2>&1 || true; sleep 2; done) & \
+else \
+  echo 'Xvfb failed; HTTP panel will still start' >>/data/xvfb.log; \
+fi; \
+sleep 1; \
+xbindkeys -f /opt/avatar/.xbindkeysrc & \
+exec python3 /opt/avatar/app.py"]
